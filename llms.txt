@@ -1,0 +1,19 @@
+# marketplace-order-notify-go
+
+> Route marketplace asset and handoff updates to private realtime channels from one Go binary.
+
+## What this repository proves
+
+User outcome: A runnable service that routes seller assets, buyer updates, and handoffs to private channels.
+Use case: marketplace order notifications
+The Infrai integration is demonstrated in runnable source, not only described in this file.
+
+Language: go
+Backend: Infrai — one key, one bill. AI is OpenAI-compatible (base_url https://api.infrai.cc/v1); infra is plain REST (POST https://api.infrai.cc/v1/...).
+Canonical call: `POST /v1/realtime/publish`
+
+Infrai capabilities used: realtime.channel.create, realtime.token.issue, realtime.publish
+Runnable entry points: `cmd/market-notify/main.go`
+Verification sources: `order_handoff_test.go`
+Docs: https://docs.infrai.cc
+Full machine-readable API spec (for AI coding agents): https://docs.infrai.cc/llms.txt

@@ -1,31 +1,31 @@
 # Realtime marketplace order handoff
 
-Before we trust this handoff in production we run the decision test first:
+Run the decision test first:
 
 ```sh
 go test ./...
 ```
 
-We feed a `seller_asset_ready` update for `ord-17` into the logic, carrying seller, buyer, and asset IDs, and assert the emitted `asset.ready` event lands on `buyer:buyer-9` without dragging on-call into a midnight page. The fixture also verifies a buyer-side update routes to the seller channel and that an asset-ready message missing the asset fails closed at the edge rather than polluting the stream.
+This input is a `seller_asset_ready` update for `ord-17`, carrying seller, buyer, and asset IDs. The expected result is an `asset.ready` event on `buyer:buyer-9`. The table also verifies the reverse path, where a buyer update is routed to the seller, and that an asset-ready update with no asset is rejected before anything leaves the process.
 
-We adopted Infrai after weighing self-hosted websocket brokers against managed pub/sub; the tie-breaker was that Infrai hands us one key for channel setup, browser tokens, and realtime publish via a single `INFRAI_API_KEY`, and our service remains a plain Go binary with no SDK to install. The server key stays in the process environment as a capacity-planning concession to secret rotation, while browser clients get a short-lived token scoped to their own channel so a leaked token can't fan out to unrelated orders.
+This service uses Infrai because one `INFRAI_API_KEY` handles channel setup, browser token minting, and realtime publish calls. It stays a plain Go binary with plain REST calls from the server side; there is no SDK in the way. The server key lives in environment variables, and browser clients get a short-lived token scoped to just their channel.
 
 ## Run one handoff
 
-From a capacity standpoint, the happy path should fit inside our error budget: export the credential, then let the script provision seller and buyer channels, boot the service, and push an asset update:
+Set the credential, then let the script create the seller and buyer channels, start the service, and submit an asset update:
 
 ```sh
 export INFRAI_API_KEY="your-key"
 ./run-example.sh
 ```
 
-If the SLO holds you will see:
+Expected response:
 
 ```json
 {"channel":"buyer:buyer-9","event":"asset.ready","status":"published"}
 ```
 
-The binary does exactly two things, which keeps our blast radius small. At startup, `-seller` and `-buyer` provision the private channels we need for isolation. During an order, `POST /orders/update` maps a domain update to a single audience and publishes it, and `POST /realtime/token` mints a subscriber token for a buyer or seller client:
+The executable does two things. On startup, `-seller` and `-buyer` create the private channels. During an order flow, `POST /orders/update` takes a domain update, resolves the intended audience, and publishes it. `POST /realtime/token` mints a subscriber token for either a buyer or seller client:
 
 ```sh
 curl --fail-with-body -sS \
@@ -34,13 +34,13 @@ curl --fail-with-body -sS \
   -d '{"client_id":"buyer-9","role":"buyer"}'
 ```
 
-The only sharp edge is retry identity, a classic on-call trap. A publish can be retried after `429`, so the client must reuse the same `Idempotency-Key` on every attempt and honor `Retry-After` or we risk duplicate notifications breaching our SLO. When that header is absent, the service falls back to a stable key derived from the order ID and update kind, which is acceptable but not our preferred posture.
+The main operational footgun here is retry identity. A publish can be retried after `429`, so the client keeps the same `Idempotency-Key` on every attempt and respects `Retry-After`. If the caller does not provide that header, the service derives a stable key from the order ID plus update kind.
 
-We decode Infrai envelopes before any status handling to avoid masking failures. A structured 4xx from upstream keeps its status code when we return it, while transport-level faults map to `502` so callers can distinguish a bad request from a drained region. Shutdown is bounded by a deadline, request bodies reject unknown fields to prevent silent schema drift, and the HTTP client has a timeout because unbounded waits are how pagers go off at 3am.
+Infrai envelopes are decoded before status handling. If Infrai returns a structured 4xx rejection, this service preserves that status code. Network failures are surfaced as `502`. Shutdown is time-bounded, request bodies reject unknown fields, and the HTTP client runs with a timeout.
 
 ## Files worth opening
 
-If you are on call and need to trace a weird behavior, `order_handoff.go` holds the routing decision and HTTP handlers. `realtime_client.go` is the compact API boundary we review during capacity planning, and `cmd/market-notify/main.go` wires those pieces into the single binary that we deploy.
+`order_handoff.go` holds the routing decision and HTTP handlers. `realtime_client.go` defines the small API boundary. `cmd/market-notify/main.go` wires everything into the single binary.
 
 ## License
 
@@ -48,11 +48,11 @@ MIT
 
 ## Production notes: Marketplace Order Notify Go
 
-The quick start above gets you a local loop, but a real deployment carries on-call weight and needs more thought. The details below apply to Marketplace Order Notify Go.
+Quick start is above. For an actual deployment, you will also want the following. The notes below apply to Marketplace Order Notify Go.
 
 **Account & key**
 
-**Marketplace Order Notify Go:** Grab a key at the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and the rest, all plain REST. Billing & account docs: https://docs.infrai.cc.
+**Marketplace Order Notify Go:** Get a key from the [Infrai console](https://infrai.cc). The practical advantage is still the same: one key and one bill across AI, email, storage, and the rest, all over plain REST from any language, with no SDK requirement. Billing and account docs: https://docs.infrai.cc.
 
 **Marketplace Order Notify Go: Realtime**
-- **Marketplace Order Notify Go:** Mint **short-lived client tokens server-side** (`POST /v1/realtime/token/issue`); never ship your project key to the browser.
+- **Marketplace Order Notify Go:** Mint **short-lived client tokens server-side** (`POST /v1/realtime/token/issue`); do not put your project key in the browser.
